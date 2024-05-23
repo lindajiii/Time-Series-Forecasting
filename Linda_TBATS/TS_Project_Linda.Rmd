@@ -1,0 +1,762 @@
+---
+title: "TS Project (Spring 24)"
+author: "Linda Ji"
+date: "2024-05-19"
+output: html_document
+---
+
+---
+#
+add new chunks with cmd+opt+i
+#add <- with opt+-
+
+```{r}
+#install.packages("plotly")
+#install.packages("devtools")
+#devtools::install_github("hrbrmstr/AnomalyDetection")
+library(forecast)
+library(lmtest)
+library(urca)
+library(tseries)
+library(xts)
+library(boot)
+library(arfima)
+library(fracdiff)
+library(repr)
+library(TSA)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(caret)
+library(tidyverse)
+library(doParallel)
+library(lattice)
+library(pdp)
+library(nnfor)
+library(anomalize)
+library(AnomalyDetection)
+library(hrbrthemes)
+library(plotly)
+
+options(repr.plot.width=15, repr.plot.height=6)
+options(warn=-1)
+```
+# 1. Problem statement:
+- To build a model that more accurately predicts the unit sales for thousands of items sold at top three Corporación Favorita stores. ( After EDA, store number 44, 45, & 47 as top best performing sales)
+(a large Ecuadorian-based grocery retailer)
+- Forecast the sales data for each outlet from 2017-08-02 to to 2017-08-15 given data from  2013-01-01 to 2017-08-01
+- Evaluation metric: Root Mean Squared Error
+
+Load data
+```{r}
+datapath <- "/Users/lindaji/Downloads/02 Time Series/00 Project/retail_data"
+sales <- read.csv(paste(datapath,"train.csv",sep="/"),header=T)
+oil <- read.csv(paste(datapath,"oil.csv",sep="/"),header=T)
+holiday <- read.csv(paste(datapath,"holidays_events.csv",sep="/"),header=T)
+store <- read.csv(paste(datapath,"stores.csv",sep="/"),header=T)
+head(oil)
+tail(oil)
+head(sales)
+```
+# 02. Assumptions/Hypotheses about data and/or modeling
+- Assume sales data is seasonal, to test which are the significant seasonal cycles
+- Assume forecasted sales will have the same trend as train test set 
+- Assume that when data is forecast on a store level( by aggregating family of products) the seasonality pattern might change somewhat, but we are still able to model it. 
+
+# 03. Data properties 
+(stationarity, correlations, data distribution) and Exploratory data, 
+- please refer to python file for EDA, stationarity & correlation check done there.
+
+```{r}
+sales$family %>% table() %>% as.data.frame()
+a <- sales %>% group_by(family) %>% summarise(mean_sales = round(mean(sales, na.rm=TRUE),2),
+                                              median_sales = round(median(sales, na.rm = TRUE),2),
+                                              IQR_sales = IQR(sales),
+                                              max_sales = max(sales),
+                                              total_sales = sum(sales))%>%
+  arrange(desc(total_sales))
+#a
+
+# Define a maroon color palette
+maroon_palette <- c("#800000", "#A52A2A", "#B22222", "#8B0000", "#CD5C5C", "#E9967A")
+
+# Ensure the palette is long enough for the number of families
+num_families <- length(unique(a$family))
+maroon_palette <- rep(maroon_palette, length.out = num_families)
+
+b <- ggplot(a)+
+    geom_col(aes(x = reorder(family, -mean_sales), y = mean_sales, fill = str_to_title(family)))+
+    scale_fill_viridis_d()+
+    #scale_fill_manual(values = maroon_palette) +
+    theme(axis.text.x=element_blank(),axis.ticks.x=element_blank())+
+    labs(title = 'Proportion of sales by product family (rollover to see labels)',
+         x = 'Product family',
+         y = 'Average daily sales',
+         legend = 'Family')
+
+ggplotly(b, width = 800, height = 450)
+
+sales %>% 
+  filter(sales>0) %>% 
+  group_by(date) %>% 
+  summarise(avg_sales_per_day = mean(sales, na.rm=TRUE)) %>% 
+  right_join(oil, by='date') %>% 
+  ggplot()+
+    geom_line(aes(x = date, y = scale(dcoilwtico), colour = 'Oil_price'), na.rm = TRUE)+
+    geom_line(aes(x = date, y = scale(avg_sales_per_day), colour = 'Sales'), na.rm = TRUE)+
+  labs(title = "Total store sales compared to local oil prices: 2013-2017",
+       subtitle = "Data has been normalised for comparrison")
+```
+
+
+# 04. Feature engineering
+## A.) Combine data in train & oil
+```{r}
+# Make a list of dates to join oil prices with (as it is missing weekends)
+unq_dates <- expand.grid(date = unique(sales$date))
+oil$date <- as.Date(oil$date)
+unq_dates$date <- as.Date(unq_dates$date)
+sales$date <- as.Date(sales$date)
+all_oil <- left_join(unq_dates, oil, by = "date")
+#all_oil
+
+# Interpolate NA values in a new 'oil_price' column
+all_oil$oil_price <- c(na.approx(all_oil$dcoilwtico), NA)
+
+# Assign the interpolated oil prices to the sales dataset
+
+sales_oil <- left_join(sales, all_oil, by = "date")
+
+# Drop id, dcoilwtico
+to_drop <- c("id", "dcoilwtico","promotion")
+sales_oil <- sales_oil[, !names(sales_oil) %in% to_drop]
+
+# Replace missing values in onpromotion with 0
+sales_oil$onpromotion[is.na(sales_oil$onpromotion)] <- 0
+
+# Change promotion column to 1 if there is a promotion number
+sales_oil$onpromotion <- if_else(sales_oil$onpromotion != 0, 1, sales_oil$onpromotion)
+
+head(sales_oil)
+#View(sales_oil)
+```
+### Check Store information
+```{r}
+store_3 <- subset(store,store_nbr %in% c(44,45,47))
+#store_3
+```
+
+## B.) Add local holiday and national columns
+```{r}
+holiday$date <- as.Date(holiday$date)
+
+#Filter for local holidays only relevant to Quito, and only holidays that were not transferred
+holiday_local <- subset(holiday,locale_name=="Quito")
+holiday_local <- subset(holiday_local,transferred=="False")
+holiday_local$local_holiday <- rep(1, nrow(holiday_local)) # add dummy variable 1 
+holiday_local_2 <- select(holiday_local,date, local_holiday)
+print(head(holiday_local_2))
+
+#filter for national holidays and holidays that were not transferred
+holiday_national <- subset(holiday,locale=="National")
+holiday_national <- subset(holiday_national,transferred=="False")
+holiday_national$national_holiday <- rep(1, nrow(holiday_national))
+holiday_national_2 <- select(holiday_national,date, national_holiday)
+print(head(holiday_national_2))
+
+sales_oil <- left_join(sales_oil, holiday_local_2, by = "date")
+sales_oil <- left_join(sales_oil, holiday_national_2, by = "date",relationship = "many-to-many")
+
+sales_oil$local_holiday <- na.fill(sales_oil$local_holiday, fill = 0)
+sales_oil$national_holiday <- na.fill(sales_oil$national_holiday, fill = 0)
+sales_oil$sales <- na.fill(sales_oil$sales, fill = 0)
+print(head(sales_oil))
+```
+## C.) Subset to top 3 stores(store number 44, 45, 47 only)
+
+```{r}
+sales_44 <- subset(sales_oil,store_nbr %in% c(44))
+sales_45 <- subset(sales_oil,store_nbr %in% c(45))
+sales_47 <- subset(sales_oil,store_nbr %in% c(47))
+#sales_44
+```
+# 05. Data processing 
+(anomaly detection, cleansing and imputations) and transformations
+## D.) Aggregated & impute data for each store 
+```{r}
+sales_44a <- sales_44 %>%
+  group_by(date) %>%
+  summarise(sales = sum(sales))
+
+sales_45a <- sales_45 %>%
+  group_by(date) %>%
+  summarise(sales = sum(sales),oil_price=mean(oil_price),local_holiday=mean(local_holiday),national_holiday=mean(national_holiday))
+
+sales_47a <- sales_47 %>%
+  group_by(date) %>%
+  summarise(sales = sum(sales),oil_price=mean(oil_price),local_holiday=mean(local_holiday),national_holiday=mean(national_holiday))
+print(head(sales_47a))
+```
+## Check May-Jun 2016 plot for pulse, 
+as that's when earthquake relief donation efforts might have increased sales more than usual
+```{r}
+#earthquake_start_date <- as.Date("2015-01-01")
+#earthquake_end_date <- as.Date("2016-12-01")
+#clean_train_44_eq <- clean_train_44 %>% 
+  #filter(date < earthquake_end_date)%>% 
+  #filter(date > earthquake_start_date)
+
+#autoplot(ts(clean_train_44_eq$sales_i,start=c(2015,01,01),frequency=365.25))
+
+```
+
+## E.) Imput sales for 0 values 
+- There are zero sales on 1st day of each year as the stores are closed
+```{r}
+lm_model_44 <- lm(sales ~ date, data = sales_44a)
+sales_44a$sales_i <- ifelse(is.na(sales_44a$sales) | sales_44a$sales == 0, predict(lm_model_44, newdata = sales_44a), sales_44a$sales)
+
+lm_model_45 <- lm(sales ~ date, data = sales_45a)
+sales_45a$sales_i <- ifelse(is.na(sales_45a$sales) | sales_45a$sales == 0, predict(lm_model_45, newdata = sales_45a), sales_44a$sales)
+
+lm_model_47 <- lm(sales ~ date, data = sales_44a)
+sales_47a$sales_i <- ifelse(is.na(sales_47a$sales) | sales_47a$sales == 0, predict(lm_model_47, newdata = sales_47a), sales_47a$sales)
+
+#sales_44a$sales <- as.numeric(sales_44a$sales)
+#sales_45a$sales <- as.numeric(sales_45a$sales)
+#sales_47a$sales <- as.numeric(sales_47a$sales)
+#sales_47a
+
+autoplot(ts(sales_44a$sales_i))
+autoplot(ts(sales_45a$sales_i))
+autoplot(ts(sales_47a$sales_i))
+#sales_47a$sales_i
+```
+## F.) Filter outliers and impute ( higher values in 2016 due to earthquake relief efforts etc. )
+```{r}
+# Detect outliers
+outliers44 <- tsoutliers(sales_44a$sales_i, iterate = 2, lambda = NULL)
+outliers45 <- tsoutliers(sales_45a$sales_i, iterate = 2, lambda = NULL)
+outliers47 <- tsoutliers(sales_47a$sales_i, iterate = 2, lambda = NULL)
+print(outliers44)
+print(outliers45)
+print(outliers47)
+# Replace outliers in sales_44a$sales_i with the replacements
+sales_44a$sales_i[outliers44$index] <- outliers44$replacements
+sales_45a$sales_i[outliers45$index] <- outliers45$replacements
+sales_47a$sales_i[outliers47$index] <- outliers47$replacements
+
+#Plot to check
+plot(ts(sales_44a,start=2013,frequency=365.25))
+autoplot(ts(sales_45a$sales_i))
+autoplot(ts(sales_47a$sales_i))
+```
+## G.) Clean data: split train test
+```{r}
+cutoff_date <- as.Date("2017-08-02")
+clean_train_44 <- sales_44a %>% filter(date < cutoff_date)
+clean_test_44 <- sales_44a %>% filter(date >= cutoff_date)
+clean_train_45 <- sales_45a %>% filter(date < cutoff_date)
+clean_test_45 <- sales_45a %>% filter(date >= cutoff_date)
+clean_train_47 <- sales_47a %>% filter(date < cutoff_date)
+clean_test_47 <- sales_47a %>% filter(date >= cutoff_date)
+clean_train_47
+```
+
+## H.) Raw data: Split Train test 
+- For checking difference in evaluation metrics
+```{r}
+#Split for raw data (missing values and anomalies not imputed)
+sales_grouped <- sales %>%
+    group_by(store_nbr) %>%
+    summarise(total_daily_sales = sum(sales))
+sales_grouped
+sales
+# Determine the cutoff date for splitting
+cutoff_date <- as.Date("2017-08-02")
+cutoff_date2 <- as.Date("2016-08-02")
+# Split the data into training and testing sets based on the cutoff date
+train <- sales %>% filter(date < cutoff_date)
+#train <- sales %>% filter(date < cutoff_date)%>% filter(date >= cutoff_date2)
+test <- sales %>% filter(date >= cutoff_date)
+
+# Split by store: 
+train_44 <- subset(train,store_nbr=="44")
+train_45 <- subset(train,store_nbr=="45")
+train_47 <- subset(train,store_nbr=="47")
+
+test_44 <- subset(test,store_nbr=="44")
+test_45 <- subset(test,store_nbr=="45")
+test_47 <- subset(test,store_nbr=="47")
+
+# Test on sub families
+train_44_grocery <- subset(train_44,family=="GROCERY I")%>% select(date, sales)
+test_44_grocery <- subset(test_44,family=="GROCERY I")%>% select(date, sales)
+train_44_grocery
+test_44_grocery
+```
+Aggregate the total daily sales
+```{r}
+train_44_agg <- train_44 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),store_nbr=mean(store_nbr))
+train_45_agg <- train_45 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),,store_nbr=mean(store_nbr))
+train_47_agg <- train_47 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),store_nbr=mean(store_nbr))
+test_44_agg <- test_44 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),store_nbr=mean(store_nbr))
+test_45_agg <- test_45 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),store_nbr=mean(store_nbr))
+test_47_agg <- test_47 %>%
+  group_by(date) %>%
+  summarise(total_daily_sales = sum(sales),store_nbr=mean(store_nbr))
+head(test_44_agg)
+plot(ts(train_44_agg$total_daily_sales,start=2013,frequency=365.25))
+```
+
+## I.) Plot Time Series (without imputations or outlier replacement)
+```{r}
+options(repr.plot.width = 28, repr.plot.height = 7)
+# Merge the datasets by row
+merged_dataset <- rbind(train_44_agg, train_45_agg, train_47_agg)
+merged_dataset <- merged_dataset %>% mutate(store_nbr = as.factor(store_nbr))
+
+library(lubridate)
+
+# Aggregate by month
+data_store_44_monthly <- merged_dataset %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(month,store_nbr) %>%
+  summarise(total_monthly_sales = sum(total_daily_sales))
+
+ggplot(merged_dataset, aes(x = date, y = total_daily_sales, color = store_nbr))+
+  geom_line() +
+  labs(x = "Date", y = "Total Daily Sales", title = "Sales Over Time") +
+  #scale_color_manual(values = c("red", "blue", "green"))
+  theme_minimal()
+
+ggplot(data_store_44_monthly, aes(x = month, y = total_monthly_sales, color = store_nbr))+
+  geom_line() +
+  labs(x = "Date", y = "Total Monthly Sales", title = "Sales Over Time") +
+  scale_color_manual(values = c("red", "blue", "green"))
+
+
+```
+
+# Anomaly detection package
+No anmalies detected
+```{r}
+# Create a timestamp sequence based on the frequency
+timestamps <- as.Date(train_44_agg$date)
+
+# Create a data frame with timestamps and total_daily_sales
+ts_44 <- data.frame(timestamp = timestamps, sales = clean_train_44$sales_i)
+
+res <- ad_ts(ts_44, max_anoms=0.2, direction='both',threshold='med_max')
+
+glimpse(res)
+```
+
+
+## J). Testing Family level Seasonality
+```{r}
+library(ModelMetrics)
+# Test for family 
+plot(ts(train_44_grocery))
+
+# Check if there is seasonal pattern Year over Year
+YoY <- train_44_grocery %>% group_by(date=floor_date(date, "year")) %>% summarize(sales=mean(sales))
+acf(YoY$sales) # No significant yearly trend
+
+# Check if there is seasonal pattern Quarter over Quarter
+QoQ <- train_44_grocery %>% group_by(date=floor_date(date, "quarter")) %>% summarize(sales=mean(sales))
+acf(QoQ$sales) # No significant quarterly trend
+
+# Check if there is seasonal pattern Month over month
+MoM <- train_44_grocery %>% group_by(date=floor_date(date, "month")) %>% summarize(sales=mean(sales))
+acf(MoM$sales) # significant monthly trend
+
+# Check if there is seasonal pattern Week over Week
+WoW <- train_44_grocery %>% group_by(date=floor_date(date, "week")) %>% summarize(sales=mean(sales))
+acf(WoW$sales) # very significant weekly trend
+
+# Check if there is seasonal pattern Day over Day
+DoD <- train_44_grocery  %>% group_by(date=floor_date(date, "day")) %>% summarize(sales=mean(sales))
+acf(DoD$sales) # very significant daily trend
+
+
+tbats44_grocery <- tbats(ts(train_44_grocery$sales),seasonal.periods=c(7,365.25))
+tbats44_grocery
+#plot(tbats44_grocery)
+predict44_grocery <- predict(tbats44_grocery,h=14)
+#plot(predict44_grocery)
+(rmse44_g <- rmse(test_44_grocery$sales, predict44_grocery$mean))
+```
+### Plot the family predicted graph
+Family level prediction for RMSE showed 38,830, much bigger than around 10,000 for store level prediction, so will continue with store level modeling
+```{r}
+library(ggplot2)
+train_44_grocery_predicted <- test_44_grocery
+train_44_grocery_predicted$sales <- as.numeric(predict44_grocery$mean)
+
+# plot the graph
+ggplot(data=train_44_grocery) +
+  geom_line(data=test_44_grocery, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_44_grocery_predicted, aes(x=date, y=sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+```
+
+# K.) Checking Store level seasonality
+- Very significant weekly and daily seasonality in acf graph
+```{r}
+
+# Check if there is seasonal pattern Year over Year
+YoY <- train_44_agg %>% group_by(date=floor_date(date, "year")) %>% summarize(sales=mean(total_daily_sales))
+acf(YoY$sales) # No significant yearly trend
+
+# Check if there is seasonal pattern Quarter over Quarter
+QoQ <- train_44_agg %>% group_by(date=floor_date(date, "quarter")) %>% summarize(sales=mean(total_daily_sales))
+acf(QoQ$sales) # No significant quarterly trend
+
+# Check if there is seasonal pattern Month over month
+MoM <- train_44_agg %>% group_by(date=floor_date(date, "month")) %>% summarize(sales=mean(total_daily_sales))
+acf(MoM$sales) # significant monthly trend
+
+# Check if there is seasonal pattern Week over Week
+WoW <- train_44_agg %>% group_by(date=floor_date(date, "week")) %>% summarize(sales=mean(total_daily_sales))
+acf(WoW$sales) # very significant weekly trend
+
+# Check if there is seasonal pattern Day over Day
+DoD <- train_44_agg  %>% group_by(date=floor_date(date, "day")) %>% summarize(sales=mean(total_daily_sales))
+acf(DoD$sales) # very significant daily trend
+```
+# 06. Proposed approaches (model) with justification and trade-offs, if any
+## A.) Running TBATs model for both raw aggregated data & cleaned data
+- Ideal is to check the difference the data quality makes to the accuracy of the model 
+```{r}
+#TBATS with raw data
+tbats44 <- tbats(ts(train_44_agg$total_daily_sales,start=2013),seasonal.periods=c(7,365.25))
+tbats45 <- tbats(ts(train_45_agg$total_daily_sales,start=2013),seasonal.periods=c(7,365.25))
+tbats47 <- tbats(ts(train_47_agg$total_daily_sales,start=2013),seasonal.periods=c(7,365.25))
+#TBATS with 0 values imputed with linear regression
+tbats44_clean <- tbats(ts(clean_train_44$sales,start=2013),seasonal.periods=c(7,365.25))
+tbats45_clean <- tbats(ts(clean_train_45$sales,start=2013),seasonal.periods=c(7,365.25))
+tbats47_clean <- tbats(ts(clean_train_47$sales,start=2013),seasonal.periods=c(7,365.25))
+
+#TBATS with 0 values imputed with linear regression & anomalies replaced
+tbats44_cleana <- tbats(ts(clean_train_44$sales_i,start=2013),seasonal.periods=c(7*12,365.25))
+tbats45_cleana <- tbats(ts(clean_train_45$sales_i,start=2013),seasonal.periods=c(7*12,365.25))
+tbats47_cleana <- tbats(ts(clean_train_47$sales_i,start=2013),seasonal.periods=c(7*12,365.25))
+
+tbats44_cleana
+```
+
+## B.) Checking components of TBAT model
+```{r}
+comp1 <- tbats.components(tbats44)
+plot(comp1)
+comp2 <- tbats.components(tbats44_clean)
+plot(comp2)
+comp3 <- tbats.components(tbats44_cleana)
+plot(comp3)
+```
+## C.) Predicting & Calculating RMSE, using TBATS model 
+```{r}
+library(ModelMetrics)
+#plot(tbats44_grocery)
+predict44 <- predict(tbats44,h=14)
+predict45 <- predict(tbats45,h=14)
+predict47 <- predict(tbats47,h=14)
+
+predict44c <- predict(tbats44_clean,h=14)
+predict45c <- predict(tbats45_clean,h=14)
+predict47c <- predict(tbats47_clean,h=14)
+
+predict44ca <- predict(tbats44_cleana,h=14)
+predict45ca <- predict(tbats45_cleana,h=14)
+predict47ca <- predict(tbats47_cleana,h=14)
+
+rmse44 <- rmse(test_44_agg$total_daily_sales, predict44$mean)
+rmse45 <- rmse(test_45_agg$total_daily_sales, predict45$mean)
+rmse47 <- rmse(test_47_agg$total_daily_sales, predict47$mean)
+
+rmse44c <- rmse(clean_test_44$sales, predict44c$mean)
+rmse45c <- rmse(clean_test_45$sales, predict45c$mean)
+rmse47c <- rmse(clean_test_47$sales, predict47c$mean)
+
+rmse44ca <- rmse(clean_test_44$sales_i, predict44ca$mean)
+rmse45ca <- rmse(clean_test_45$sales_i, predict45ca$mean)
+rmse47ca <- rmse(clean_test_47$sales_i, predict47ca$mean)
+
+
+print(paste("RMSE of store 44:", rmse44))
+print(paste("RMSE of store 45:", rmse45))
+print(paste("RMSE of store 47:", rmse47))
+print(paste("RMSE of store 44_c:", rmse44c))
+print(paste("RMSE of store 45_c:", rmse45c))
+print(paste("RMSE of store 47_c:", rmse47c))
+print(paste("RMSE of store 44_ca:", rmse44ca))
+print(paste("RMSE of store 45_ca:", rmse45ca))
+print(paste("RMSE of store 47_ca:", rmse47ca))
+
+# Add date column for plotting
+train_44_predicted <- test_44_agg
+train_44_predicted$total_daily_sales <- as.numeric(predict44$mean)
+train_45_predicted <- test_45_agg
+train_45_predicted$total_daily_sales <- as.numeric(predict45$mean)
+train_47_predicted <- test_47_agg
+train_47_predicted$total_daily_sales <- as.numeric(predict47$mean)
+
+train_44_predictedc <- clean_test_44
+train_44_predictedc$sales <- as.numeric(predict44c$mean)
+train_45_predictedc <- clean_test_45
+train_45_predictedc$sales <- as.numeric(predict45c$mean)
+train_47_predictedc <- clean_test_47
+train_47_predictedc$sales <- as.numeric(predict47c$mean)
+
+train_44_predictedca <- clean_test_44
+train_44_predictedca$sales_i <- as.numeric(predict44ca$mean)
+train_45_predictedca <- clean_test_45
+train_45_predictedca$sales_i <- as.numeric(predict45ca$mean)
+train_47_predictedca <- clean_test_47
+train_47_predictedca$sales_i <- as.numeric(predict47ca$mean)
+
+checkresiduals(predict44)
+checkresiduals(predict44c)
+checkresiduals(predict44ca)
+```
+
+```{r}
+library(dplyr)
+# Create a dataframe to store the RMSE values
+rmse_df <- data.frame(Store = character(),
+                      TBATS_RMSE = numeric(),
+                      stringsAsFactors = FALSE)
+
+
+# Append RMSE values for each store and model
+rmse_df <- rbind(rmse_df, data.frame(Store = "Store_44", TBATS_RMSE = rmse44))
+rmse_df <- rbind(rmse_df, data.frame(Store = "Store_45", TBATS_RMSE = rmse45))
+rmse_df <- rbind(rmse_df, data.frame(Store = "Store_47", TBATS_RMSE = rmse47))
+
+TBATS_RMSE_0_filled<- c(rmse44c,rmse45c,rmse47c)
+TBATS_RMSE_0_filled_anomalies_removed<- c(rmse44ca,rmse45ca,rmse47ca)
+rmse_df <- cbind(rmse_df, TBATS_RMSE_0_filled = TBATS_RMSE_0_filled,TBATS_RMSE_0_filled_anomalies_removed=TBATS_RMSE_0_filled_anomalies_removed)
+print(rmse_df)
+
+
+# Calculate the mean of each column
+summarise_df <- rmse_df %>%
+  summarise(TBATS_RMSE = sum(TBATS_RMSE),TBATS_RMSE_0_filled = sum(TBATS_RMSE_0_filled),TBATS_RMSE_0_filled_anomalies_removed = sum(TBATS_RMSE_0_filled_anomalies_removed))
+
+sales_44a <- sales_44 %>%
+  group_by(date) %>%
+  summarise(sales = sum(sales))
+
+# View the mean data
+print(summarise_df)
+
+```
+
+## Plot the store predicted graph for raw data
+```{r}
+# plot the graph
+ggplot(data=train_44_agg) +
+  geom_line(data=test_44_agg, aes(x=date, y=total_daily_sales, group=1, col='r')) +
+  geom_line(data=train_44_predicted, aes(x=date, y=total_daily_sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=train_45_agg) +
+  geom_line(data=test_45_agg, aes(x=date, y=total_daily_sales, group=1, col='r')) +
+  geom_line(data=train_45_predicted, aes(x=date, y=total_daily_sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=train_47_agg) +
+  geom_line(data=test_47_agg, aes(x=date, y=total_daily_sales, group=1, col='r')) +
+  geom_line(data=train_47_predicted, aes(x=date, y=total_daily_sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+```
+# Plot for cleaned data
+```{r}
+# plot the graph
+ggplot(data=clean_train_44) +
+  geom_line(data=clean_test_44, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_44_predictedc, aes(x=date, y=sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=clean_train_45) +
+  geom_line(data=clean_test_45, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_45_predictedc, aes(x=date, y=sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=clean_train_47) +
+  geom_line(data=clean_test_47, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_47_predictedc, aes(x=date, y=sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+# plot the graph
+ggplot(data=clean_train_44) +
+  geom_line(data=clean_test_44, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_44_predictedca, aes(x=date, y=sales_i, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=clean_train_45) +
+  geom_line(data=clean_test_45, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_45_predictedca, aes(x=date, y=sales_i, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+ggplot(data=clean_train_47) +
+  geom_line(data=clean_test_47, aes(x=date, y=sales, group=1, col='r')) +
+  geom_line(data=train_47_predictedca, aes(x=date, y=sales_i, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+```
+## D.) Testing Store level auto arima model 
+```{r}
+library(forecast)
+aa44 <- auto.arima(train_44_agg$total_daily_sales)
+aa45 <- auto.arima(train_45_agg$total_daily_sales)
+aa47 <- auto.arima(train_47_agg$total_daily_sales)
+aa44
+```
+### RMSE for autoarima
+```{r}
+library(ModelMetrics)
+forecast_aa44 <- forecast(aa44,14)
+forecast_aa45 <- forecast(aa45,14)
+forecast_aa47 <- forecast(aa47,14)
+plot(forecast_aa44)
+rmse44_2 <- rmse(test_44_agg$total_daily_sales,forecast_aa44$mean)
+rmse45_2 <- rmse(test_45_agg$total_daily_sales,forecast_aa47$mean)
+rmse47_2 <- rmse(test_45_agg$total_daily_sales,forecast_aa47$mean)
+
+autoarima_RMSE<- c(rmse44_2,rmse45_2,rmse47_2)
+
+# Bind the new column to the dataframe df with the name "New_Column"
+rmse_df <- cbind(rmse_df, autoarima_RMSE = autoarima_RMSE)
+
+print(rmse_df)
+```
+## E.) Testing Store level holt winters
+```{r}
+hw44 <- hw(ts(train_44_agg$total_daily_sales, frequency = 7))
+hw45 <- hw(ts(train_45_agg$total_daily_sales, frequency = 7))
+hw47 <- hw(ts(train_47_agg$total_daily_sales, frequency = 7))
+
+hw44_forecast <- forecast(hw44, h = 14)
+hw45_forecast <- forecast(hw45, h = 14)
+hw47_forecast <- forecast(hw47, h = 14)
+
+rmse44_3 <- rmse(test_44_agg$total_daily_sales,hw44_forecast$mean)
+rmse45_3 <- rmse(test_45_agg$total_daily_sales,hw45_forecast$mean)
+rmse47_3 <- rmse(test_47_agg$total_daily_sales,hw47_forecast$mean)
+
+hw_RMSE<- c(rmse44_3,rmse45_3,rmse47_3)
+rmse_df <- cbind(rmse_df, holtwinters_RMSE = hw_RMSE)
+print(rmse_df)
+#rmse44_3
+```
+### RMSE & Plot
+```{r}
+train_44_predicted_3 <- test_44_agg
+train_44_predicted_3$total_daily_sales <- as.numeric(hw44_forecast$mean)
+
+ggplot(data=train_44_agg) +
+  geom_line(data=test_44_agg, aes(x=date, y=total_daily_sales, group=1, col='r')) +
+  geom_line(data=train_44_predicted_3, aes(x=date, y=total_daily_sales, group=1, col='b')) +
+  scale_color_discrete(name = 'source', labels = c('actual', 'forecast'))
+
+```
+## F.) Testing store level state space model
+```{r}
+
+ts_data <- ts(clean_train_44$sales_i, frequency = 365.25,start=2013)
+ss_model <- ets(ts_data)
+summary(ss_model)
+
+plot(fitted(ss_model))
+forecast_values <- forecast(ss_model, h = 14)  
+accuracy(forecast_values$mean, clean_test_44$sales_i)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
