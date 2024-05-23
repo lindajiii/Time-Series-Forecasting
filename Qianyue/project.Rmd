@@ -1,0 +1,312 @@
+---
+title: "project"
+output: html_notebook
+---
+
+```{r}
+library(forecast)
+library(tseries)
+library(dplyr)
+library(lubridate)
+library(fGarch)
+library(rugarch)
+library(outliers)
+library(ggplot2)
+```
+
+
+
+```{r}
+data <- read.csv("train.csv")
+```
+
+
+```{r}
+data$date <- as.Date(data$date, "%Y-%m-%d")
+train_1 <- select(data, -id)
+data_agg <- train_1 %>%
+  group_by(date, store_nbr) %>%
+  summarise(sales = sum(sales), .groups = 'drop')
+```
+
+
+44
+```{r}
+data_store <- filter(data_agg, store_nbr == 44) %>%
+  select(date, sales) 
+
+
+train <- data_store[0:(nrow(data_store)-14), ]
+test <- data_store[(nrow(data_store)-13):nrow(data_store), ]
+```
+
+
+```{r}
+summary(data_store)
+
+sum(is.na(data_store$sales))
+```
+
+```{r}
+ggplot(data_store, aes(x = 1, y = sales)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Sales") +
+  theme_minimal()
+```
+
+
+```{r}
+plot(train$sales, main = "Time Series Plot", xlab = "Time", ylab = "Count",type='l')
+acf(train$sales, main = "ACF Plot")
+pacf(train$sales, main="PACF Plot")
+```
+
+
+
+```{r}
+acf(train$sales)
+```
+
+
+
+
+
+```{r}
+d <- fracdiff::fracdiff(train$sales)
+st <- fracdiff::diffseries(train$sales,d$d)
+acf(st)
+m1 <- auto.arima(st)
+AIC(m1)
+```
+
+```{r}
+m2 <- forecast::arfima(train$sales)
+AIC(m2)
+```
+
+
+```{r}
+print(forecast(m2, h = 14)$mean)
+prediction <- forecast(m2, h = 14)
+checkresiduals(m2)
+```
+
+
+
+```{r}
+rmse <- function(actual, predicted) {
+  sqrt(mse(actual, predicted))
+}
+
+predicted_values <- prediction$mean
+actual_values <- test[["sales"]]
+sqrt(mean((predicted_values - actual_values)^2))
+```
+
+
+
+
+```{r}
+data_to_plot <- data.frame(
+  Time = 1:length(actual_values),
+  Actual = actual_values,
+  Predicted = predicted_values
+)
+
+ggplot(data_to_plot, aes(x = Time)) +
+  geom_line(aes(y = Actual, colour = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Predicted, colour = "Predicted"), size = 1, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Sales of store number 44",
+       x = "Time",
+       y = "Sales",
+       colour = "Legend") +
+  theme_minimal() +
+  scale_colour_manual(values = c("Actual" = "blue", "Predicted" = "red"))
+
+```
+
+
+
+
+45
+```{r}
+data_store <- filter(data_agg, store_nbr == 45) %>%
+  select(date, sales) 
+
+
+train <- data_store[0:(nrow(data_store)-14), ]
+test <- data_store[(nrow(data_store)-13):nrow(data_store), ]
+```
+
+
+```{r}
+summary(data_store)
+
+sum(is.na(data_store$sales))
+```
+
+```{r}
+ggplot(data_store, aes(x = 1, y = sales)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Sales") +
+  theme_minimal()
+```
+
+```{r}
+plot(train$sales, main = "Time Series Plot", xlab = "Time", ylab = "Count",type='l')
+acf(train$sales, main = "ACF Plot")
+pacf(train$sales, main="PACF Plot")
+```
+
+```{r}
+acf(train$sales)
+```
+
+
+
+```{r}
+d <- fracdiff::fracdiff(train$sales)
+st <- fracdiff::diffseries(train$sales,d$d)
+acf(st)
+m1 <- auto.arima(st)
+d$d
+AIC(m1)
+```
+
+```{r}
+m2 <- forecast::arfima(train$sales)
+AIC(m2)
+```
+
+
+```{r}
+print(forecast(m2, h = 14)$mean)
+prediction <- forecast(m2, h = 14)
+checkresiduals(m2)
+```
+
+```{r}
+rmse <- function(actual, predicted) {
+  sqrt(mse(actual, predicted))
+}
+
+predicted_values <- prediction$mean
+actual_values <- test[["sales"]]
+sqrt(mean((predicted_values - actual_values)^2))
+```
+
+
+```{r}
+data_to_plot <- data.frame(
+  Time = 1:length(actual_values),
+  Actual = actual_values,
+  Predicted = predicted_values
+)
+
+ggplot(data_to_plot, aes(x = Time)) +
+  geom_line(aes(y = Actual, colour = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Predicted, colour = "Predicted"), size = 1, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Sales of store number 45",
+       x = "Time",
+       y = "Sales",
+       colour = "Legend") +
+  theme_minimal() +
+  scale_colour_manual(values = c("Actual" = "blue", "Predicted" = "red"))
+```
+
+
+
+
+47
+```{r}
+data_store <- filter(data_agg, store_nbr == 47) %>%
+  select(date, sales) 
+
+
+train <- data_store[0:(nrow(data_store)-14), ]
+test <- data_store[(nrow(data_store)-13):nrow(data_store), ]
+```
+
+
+```{r}
+summary(data_store)
+
+sum(is.na(data_store$sales))
+```
+
+```{r}
+ggplot(data_store, aes(x = 1, y = sales)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Sales") +
+  theme_minimal()
+```
+
+
+```{r}
+plot(train$sales, main = "Time Series Plot", xlab = "Time", ylab = "Count",type='l')
+acf(train$sales, main = "ACF Plot")
+pacf(train$sales, main="PACF Plot")
+```
+
+
+
+
+```{r}
+acf(train$sales)
+```
+
+
+```{r}
+d <- fracdiff::fracdiff(train$sales)
+st <- fracdiff::diffseries(train$sales,d$d)
+acf(st)
+m1 <- auto.arima(st)
+d$d
+AIC(m1)
+```
+
+```{r}
+m2 <- forecast::arfima(train$sales)
+AIC(m2)
+```
+
+
+```{r}
+print(forecast(m2, h = 14)$mean)
+prediction <- forecast(m2, h = 14)
+checkresiduals(m2)
+```
+
+
+
+```{r}
+rmse <- function(actual, predicted) {
+  sqrt(mse(actual, predicted))
+}
+
+predicted_values <- prediction$mean
+actual_values <- test[["sales"]]
+sqrt(mean((predicted_values - actual_values)^2))
+```
+
+
+
+```{r}
+data_to_plot <- data.frame(
+  Time = 1:length(actual_values),
+  Actual = actual_values,
+  Predicted = predicted_values
+)
+
+ggplot(data_to_plot, aes(x = Time)) +
+  geom_line(aes(y = Actual, colour = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Predicted, colour = "Predicted"), size = 1, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Sales of store number 47",
+       x = "Time",
+       y = "Sales",
+       colour = "Legend") +
+  theme_minimal() +
+  scale_colour_manual(values = c("Actual" = "blue", "Predicted" = "red"))
+```
+
+
