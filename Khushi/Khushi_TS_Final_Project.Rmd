@@ -1,0 +1,305 @@
+---
+title: "Project"
+output: html_document
+date: "2024-05-22"
+---
+
+```{r}
+
+# import cleaned data
+s44 <- read.csv("//Users/khushir/Documents/Class_Notes/Time Series/Project/store_44.csv", stringsAsFactors = FALSE)
+s45 <- read.csv("//Users/khushir/Documents/Class_Notes/Time Series/Project/store_45.csv", stringsAsFactors = FALSE)
+s47 <- read.csv("//Users/khushir/Documents/Class_Notes/Time Series/Project/store_47.csv", stringsAsFactors = FALSE)
+
+# drop unnecessary columns
+s44 <- s44[ , c("date","sales"), drop = FALSE]
+s45 <- s45[ , c("date","sales"), drop = FALSE]
+s47 <- s47[ , c("date","sales"), drop = FALSE]
+
+```
+
+
+```{r}
+
+library(stats)
+library(TSA)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+
+
+s44$date <- as.Date(s44$date, format="%Y-%m-%d")
+s45$date <- as.Date(s45$date, format="%Y-%m-%d")
+s47$date <- as.Date(s47$date, format="%Y-%m-%d")
+
+```
+
+
+```{r}
+
+# splitting test and train
+
+train44 <- s44[1:1674, ]
+test44 <- s44[(nrow(s44) - 13):nrow(s44), ]
+
+train45 <- s45[1:1674, ]
+test45 <- s45[(nrow(s45) - 13):nrow(s45), ]
+
+train47 <- s47[1:1674, ]
+test47 <- s47[(nrow(s47) - 13):nrow(s47), ]
+```
+
+
+# Store 44
+
+```{r}
+
+train44.ts <- ts(train44$sales, frequency = 365)
+test44.ts <- ts(test44$sales, frequency = 365)
+
+# plot the time series
+plot(train44, type = "l", main = "Time Series Plot of train data (Store 44)", xlab = "Date", ylab = "Sales")
+
+# Plot ACF
+acf(train44$sales, main = "ACF of Sales, train data (Store 44)", ylab = "Autocorrelation", xlab = "Lag")
+
+# Plot PACF 
+pacf(train44$sales, main='PACF of Sales, train data (Store 44)')
+
+```
+
+
+```{r}
+
+# applying SARIMA(pdq)(PDQ)
+
+sarima44 <- auto.arima(train44$sales, seasonal = TRUE, trace = TRUE, approximation = TRUE)
+summary(sarima44)
+checkresiduals(sarima44)
+```
+
+```{r}
+# Forecasting
+forecast44 <- forecast(sarima44, h = 14)
+plot(forecast44, main = "SARIMA Forecast from 2nd to 15th Aug, 2017 (Store 44)", xlab = "day", ylab = "Sales")
+abline(h = mean(train44$sales), col = "red", lty = 2)
+```
+
+```{r}
+
+# Plot the test values
+plot(test44, type = "l", col = "black", lwd = 2, ylim = range(c(test44.ts, forecast44$mean)), 
+     main = "Comparison of Forecasted and Actual Values (Store 44)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+# lines(x = seq(length(test44.ts) + 1, length(test44.ts) + length(forecast44$mean)),
+#       y = forecast44$mean, col = "blue", lwd = 2)
+lines(x = test44$date,
+      y = forecast44$mean, col = "blue", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted"), col = c("black", "blue"), lty = 1, lwd = 2)
+
+# Add mean of training data as a reference line
+abline(h = mean(train44$sales), col = "red", lty = 2)
+
+```
+
+```{r}
+
+# Plot the test values
+plot(test44, type = "l", col = "black", lwd = 2, ylim = range(c(test44, forecast44$upper)), 
+     main = "Comparison of Forecasted and Actual Values (Store 44)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+lines(x = test44$date, y = forecast44$mean, col = "orange", lwd = 2)
+lines(x = test44$date, y = forecast44$upper[1:14], col = "blue", lwd = 2)
+lines(x = test44$date, y = forecast44$lower[1:14], col = "purple", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted Mean", "Forecasted Upper", "Forecasted Lower"), col = c("black",  "orange", "blue", "purple"), lty = 1, lwd = 2)
+
+abline(h = mean(train44$sales), col = "red", lty = 2)
+
+
+```
+
+```{r}
+
+# Install and load the Metrics package if you haven't already
+library(Metrics)
+
+# Calculate RMSE
+rmse44 <- rmse(forecast44$mean, test44$sales)
+rmse44
+
+```
+
+# Store 45
+
+```{r}
+
+train45.ts <- ts(train45$sales, frequency = 365)
+test45.ts <- ts(test45$sales, frequency = 365)
+
+# plot the time series
+plot(train45, type = "l", main = "Time Series Plot of train data (Store 45)", xlab = "Date", ylab = "Sales")
+
+# Plot ACF
+acf(train45$sales, main = "ACF of Sales, train data (Store 45)", ylab = "Autocorrelation", xlab = "Lag")
+
+# Plot PACF 
+pacf(train45$sales, main='PACF of Sales, train data (Store 45)')
+
+```
+
+
+```{r}
+
+# applying SARIMA(pdq)(PDQ)
+
+sarima45 <- auto.arima(train45$sales, seasonal = TRUE, trace = TRUE, approximation = TRUE)
+summary(sarima45)
+checkresiduals(sarima45)
+```
+
+```{r}
+# Forecasting
+forecast45 <- forecast(sarima45, h = 14)
+plot(forecast45, main = "SARIMA Forecast from 2nd to 15th Aug, 2017 (Store 45)", xlab = "day", ylab = "Sales")
+abline(h = mean(train45$sales), col = "red", lty = 2)
+```
+
+```{r}
+
+# Plot the test values
+plot(test45, type = "l", col = "black", lwd = 2, ylim = range(c(test45.ts, forecast45$mean)), 
+     main = "Comparison of Forecasted and Actual Values (Store 45)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+# lines(x = seq(length(test45.ts) + 1, length(test45.ts) + length(forecast45$mean)),
+#       y = forecast45$mean, col = "blue", lwd = 2)
+lines(x = test45$date,
+      y = forecast45$mean, col = "blue", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted"), col = c("black", "blue"), lty = 1, lwd = 2)
+
+# Add mean of training data as a reference line
+abline(h = mean(train45$sales), col = "red", lty = 2)
+
+```
+
+```{r}
+
+# Plot the test values
+plot(test45, type = "l", col = "black", lwd = 2, ylim = range(c(test45, forecast45$upper)), 
+     main = "Comparison of Forecasted and Actual Values (Store 45)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+lines(x = test45$date, y = forecast45$mean, col = "orange", lwd = 2)
+lines(x = test45$date, y = forecast45$upper[1:14], col = "blue", lwd = 2)
+lines(x = test45$date, y = forecast45$lower[1:14], col = "purple", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted Mean", "Forecasted Upper", "Forecasted Lower"), col = c("black",  "orange", "blue", "purple"), lty = 1, lwd = 2)
+
+abline(h = mean(train45$sales), col = "red", lty = 2)
+
+
+```
+
+
+```{r}
+
+# Install and load the Metrics package if you haven't already
+library(Metrics)
+
+# Calculate RMSE
+rmse45 <- rmse(forecast45$mean, test45$sales)
+rmse45
+
+```
+
+
+# Store 47
+
+```{r}
+
+train47.ts <- ts(train47$sales, frequency = 365)
+test47.ts <- ts(test47$sales, frequency = 365)
+
+# plot the time series
+plot(train47, type = "l", main = "Time Series Plot of train data (Store 47)", xlab = "Date", ylab = "Sales")
+
+# Plot ACF
+acf(train47$sales, main = "ACF of Sales, train data (Store 47)", ylab = "Autocorrelation", xlab = "Lag")
+
+# Plot PACF 
+pacf(train47$sales, main='PACF of Sales, train data (Store 47)')
+
+```
+
+
+```{r}
+
+# applying SARIMA(pdq)(PDQ)
+
+sarima47 <- auto.arima(train47$sales, seasonal = TRUE, trace = TRUE, approximation = TRUE)
+summary(sarima47)
+checkresiduals(sarima47)
+```
+
+```{r}
+# Forecasting
+forecast47 <- forecast(sarima47, h = 14)
+plot(forecast47, main = "SARIMA Forecast from 2nd to 15th Aug, 2017 (Store 47)", xlab = "day", ylab = "Sales")
+abline(h = mean(train47$sales), col = "red", lty = 2)
+```
+
+```{r}
+
+# Plot the test values
+plot(test47, type = "l", col = "black", lwd = 2, ylim = range(c(test47.ts, forecast47$mean)), 
+     main = "Comparison of Forecasted and Actual Values (Store 47)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+lines(x = test47$date,
+      y = forecast47$mean, col = "blue", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted"), col = c("black", "blue"), lty = 1, lwd = 2)
+
+abline(h = mean(train47$sales), col = "red", lty = 2)
+
+
+```
+```{r}
+
+# Plot the test values
+plot(test47, type = "l", col = "black", lwd = 2, ylim = range(c(test47, forecast47$upper)), 
+     main = "Comparison of Forecasted and Actual Values (Store 47)", xlab = "Day", ylab = "Sales")
+
+# Add the forecasted values to the plot
+lines(x = test47$date, y = forecast47$mean, col = "orange", lwd = 2)
+lines(x = test47$date, y = forecast47$upper[1:14], col = "blue", lwd = 2)
+lines(x = test47$date, y = forecast47$lower[1:14], col = "purple", lwd = 2)
+
+# Add legend
+legend("topright", legend = c("Actual", "Forecasted Mean", "Forecasted Upper", "Forecasted Lower"), col = c("black",  "orange", "blue", "purple"), lty = 1, lwd = 2)
+
+abline(h = mean(train47$sales), col = "red", lty = 2)
+
+
+```
+
+```{r}
+
+# Install and load the Metrics package if you haven't already
+library(Metrics)
+
+# Calculate RMSE
+rmse47 <- rmse(forecast47$mean, test47$sales)
+rmse47
+
+```
